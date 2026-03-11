@@ -89,7 +89,7 @@ class File:
         return candidate
 
 class FileServer(File):
-    file_locks = []
+    file_locks = {}
     lock_f = threading.Lock()
     lock_s = threading.Lock()
     stopped_sessions: [(time, DownloadSession)] = []
@@ -112,29 +112,33 @@ class FileServer(File):
             cnsl.log(LogTag.INFO, f"{conn.get_addr()} {status}")
 
     @classmethod
-    def lock_file(cls, filename):
+    def lock_file(cls, filename, owner_id):
         with cls.lock_f:
             if filename not in cls.file_locks:
-                cls.file_locks.append(filename)
+                cls.file_locks[filename] = owner_id
+                return netio.OK
+            if cls.file_locks[filename] == owner_id:
                 return netio.OK
             return "Файл с таким названием занят другим клиентом"
 
     @classmethod
-    def release_lock(cls, filename):
+    def release_lock(cls, filename, owner_id=None):
         with cls.lock_f:
-            if filename in cls.file_locks:
-                cls.file_locks.remove(filename)
+            if filename not in cls.file_locks:
+                return
+            if owner_id is None or cls.file_locks[filename] == owner_id:
+                cls.file_locks.pop(filename, None)
 
     @classmethod
-    def can_create_file_server(cls, filename):
+    def can_create_file_server(cls, filename, owner_id):
         result = cls.can_create_file(filename)
         if result == netio.OK:
-            return cls.lock_file(filename)
+            return cls.lock_file(filename, owner_id)
         return result
 
     @classmethod
     def handle_upload(cls, conn: NetConnection, filename):
-        status = cls.can_create_file_server(filename)
+        status = cls.can_create_file_server(filename, conn.get_addr()[0])
         conn.send_status(status)
         if status == netio.OK:
             return cls.download(conn, filename)

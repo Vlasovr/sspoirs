@@ -60,7 +60,7 @@ def clear_finished_sessions():
 
 def handle_client_session(server_sock, addr):
     conn = netio.UdpConnection(server_sock, addr, timeout=SESSION_TIMEOUT)
-    conn.message_timeout = 1
+    conn.message_timeout = 3
 
     try:
         while True:
