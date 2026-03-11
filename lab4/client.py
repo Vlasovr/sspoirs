@@ -1,21 +1,20 @@
+import socket
 import threading
 import time
-import socket
+
+import cnsl
 import cnsl_parser
 import netio
 import netregex
-import cnsl
 from cnsl import LogTag
-from neterror import CommandCancel, ConnectionClosed
-from neterror import ServerError
-from netio import TcpConnection
 from file import FileClient
+from neterror import CommandCancel, ConnectionClosed, ServerError
 
 QUIT_STR = "quit"
 BACK_STR = "back"
 connecting = True
-
 addr = ("", 0)
+
 
 def prompt_for_ip():
     while True:
@@ -25,6 +24,7 @@ def prompt_for_ip():
         if netregex.is_valid_ip(ip):
             return ip
         cnsl.log(LogTag.WARNING, netregex.WRONG_IP_MESSAGE)
+
 
 def prompt_for_port():
     while True:
@@ -47,7 +47,8 @@ def get_server_info():
                 break
             return ip, port
 
-def show_connecting_dots(interval=1.5):
+
+def show_connecting_dots(interval=1.0):
     cnsl.clear()
     cnsl.print_inline("Подключение")
     while connecting:
@@ -55,37 +56,29 @@ def show_connecting_dots(interval=1.5):
         time.sleep(interval)
 
 
-def connect_to_server(client_socket, server_ip, server_port, timeout=10):
+def connect_to_server(client_socket, server_ip, server_port):
     global connecting
     connecting = True
     dot_thread = threading.Thread(target=show_connecting_dots, daemon=True)
     dot_thread.start()
     try:
-        client_socket.settimeout(timeout)
-        client_socket.connect((server_ip, server_port))
-        tcp_conn = TcpConnection(client_socket)
-        if connected(tcp_conn):
-            client_socket.settimeout(2)
-            tcp_conn.message_timeout = 5
-            result = (tcp_conn, LogTag.SUCCESS, f"Подключен к серверу {server_ip}:{server_port}")
-        else:
-            result = (None, LogTag.ERROR, "Сервер занят.")
-    except ConnectionRefusedError:
-        result = (None, LogTag.ERROR, "Соединение отклонено сервером. Проверьте IP и порт.")
-    except TimeoutError:
-        result = (None, LogTag.ERROR, "Превышено время ожидания подключения к серверу.")
-    except socket.gaierror:
-        result = (None, LogTag.ERROR, "Невозможно разрешить имя хоста. Проверьте IP-адрес.")
+        client_socket.settimeout(0.1)
+        conn = netio.UdpConnection(client_socket, (server_ip, server_port), timeout=30)
+        conn.message_timeout = 1
+        result = (conn, LogTag.SUCCESS, f"Подключен к серверу {server_ip}:{server_port}")
     except socket.error as e:
         result = (None, LogTag.ERROR, f"Ошибка сокета: {e}")
     except Exception as e:
         result = (None, LogTag.ERROR, f"Неизвестная ошибка: {e}")
+
     connecting = False
     dot_thread.join()
     cnsl.clear()
+
     conn, tag, message = result
     cnsl.log(tag, message)
     return conn
+
 
 def process_user_input():
     while True:
@@ -98,48 +91,29 @@ def process_user_input():
             continue
         return message
 
+
 def create_socket():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(addr)
     return sock
 
+
 def close_connection(client_socket):
     client_socket.close()
-    print_connection_closed()
-
-def print_connection_closed():
     cnsl.log(LogTag.INFO, "Соединение закрыто.")
+
 
 def quit_program():
     cnsl.log(LogTag.MINUS, "Выход из программы...")
     exit(0)
 
+
 def prompt_retry(message: str) -> bool:
     retry = input(message).strip().lower()
     if retry == QUIT_STR:
         quit_program()
-    return retry in ['y', 'д']
+    return retry in ["y", "д"]
 
-def connected(conn):
-    status = conn.get_status()
-    return status == netio.OK
-
-def communicate_with_server_tcp(conn):
-    should_ask_status = False
-    while True:
-        if should_ask_status:
-            if not connected(conn):
-                break
-        else:
-            should_ask_status = True
-        try:
-            if not communicate_with_server(conn):
-                return
-        except CommandCancel:
-            should_ask_status = False
-            pass
-        except ServerError:
-            pass
 
 def communicate_with_server(conn):
     message = process_user_input()
@@ -153,42 +127,57 @@ def communicate_with_server(conn):
         FileClient.handle_upload(conn, message)
     elif command == netio.Commands.DOWNLOAD:
         FileClient.handle_download(conn, message)
+    elif command == netio.Commands.CLOSE:
+        conn.send_command(message)
+        return False
     else:
         conn.send_command(message)
+
     response = conn.r_line()
     if response:
         print(f"⏺ {response.rstrip()}")
-    else:
-        return False
-    return True
+        return True
+    return False
 
 
-def handle_server_tcp(ip, port):
+def handle_server_udp(ip, port):
     sock = create_socket()
     conn = connect_to_server(sock, ip, port)
     if not conn:
+        close_connection(sock)
         return
+
     try:
-        communicate_with_server_tcp(conn)
+        while True:
+            try:
+                if not communicate_with_server(conn):
+                    break
+            except CommandCancel:
+                pass
+            except ServerError:
+                pass
     except ConnectionClosed:
-        pass
+        cnsl.log(LogTag.ERROR, "Соединение с сервером разорвано.")
     except socket.timeout:
-        cnsl.log(LogTag.INFO, "Время ожидания истекло. Соединение закрыто.")
+        cnsl.log(LogTag.ERROR, "Время ожидания истекло.")
+    except socket.gaierror:
+        cnsl.log(LogTag.ERROR, "Невозможно разрешить имя хоста. Проверьте IP-адрес.")
     except socket.error as e:
-        cnsl.log(LogTag.ERROR, e)
-    try:
-        sock.shutdown(socket.SHUT_RDWR)
-    except socket.error:
-        pass
-    close_connection(sock)
+        cnsl.log(LogTag.ERROR, f"Ошибка сокета: {e}")
+    except Exception as e:
+        cnsl.log(LogTag.ERROR, f"Неизвестная ошибка: {e}")
+    finally:
+        close_connection(sock)
+
 
 def main():
     global addr
     cnsl.clear()
     FileClient.clear_sessions()
     cnsl.LOG_TYPE = cnsl.CLIENT_TYPE
-    addr = (cnsl_parser.get_args())
+    addr = cnsl_parser.get_args()
     cnsl.log(LogTag.PLUS, f"Клиент запущен. Для выхода введите '{QUIT_STR}'")
+
     server_ip, server_port = None, None
     while True:
         if server_ip and server_port:
@@ -197,8 +186,9 @@ def main():
                 server_ip, server_port = get_server_info()
         else:
             server_ip, server_port = get_server_info()
+
         cnsl.clear()
-        handle_server_tcp(server_ip, server_port)
+        handle_server_udp(server_ip, server_port)
         cnsl.clear()
 
 
@@ -208,7 +198,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("")
         pass
-
-# UPLOAD /mnt/storage/SPOIRS/lab1.zip
-# 192.168.100.46
-# download lab1.zip

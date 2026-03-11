@@ -36,7 +36,10 @@ class NetConnection:
         raise NotImplementedError
 
     def r_long(self):
-        return int.from_bytes(self.r_exact(long_size), 'big')
+        data = self.r_exact(long_size)
+        if not data:
+            return None
+        return int.from_bytes(data, 'big')
 
     def r_exact(self, num_bytes):
         raise NotImplementedError
@@ -69,19 +72,22 @@ class NetConnection:
 class TcpConnection(NetConnection):
     def __init__(self, sock):
         super().__init__(sock, sock.getpeername())
+        self._read_buffer = b""
 
     def r_line(self):
-        buffer = b""
         while True:
             try:
+                if b'\n' in self._read_buffer:
+                    line, _, rest = self._read_buffer.partition(b'\n')
+                    self._read_buffer = rest
+                    return line.decode(errors="ignore").strip()
                 data = self.sock.recv(netbytes.Size.KILOBYTE)
                 if not data:
+                    self._read_buffer = b""
                     return None
-                buffer += data
-                if b'\n' in buffer:
-                    line, _, _ = buffer.partition(b'\n')
-                    return line.decode().strip()
+                self._read_buffer += data
             except UnicodeDecodeError:
+                self._read_buffer = b""
                 return None
 
     def r_exact(self, num_bytes):

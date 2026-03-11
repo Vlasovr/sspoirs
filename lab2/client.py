@@ -18,6 +18,19 @@ connecting = True
 TCP = "TCP"
 UDP = "UDP"
 
+def configure_keepalive(sock, idle=30, interval=10, count=3):
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    if hasattr(socket, "TCP_KEEPIDLE"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, idle)
+    elif hasattr(socket, "TCP_KEEPALIVE"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, idle)
+    if hasattr(socket, "TCP_KEEPINTVL"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, interval)
+    if hasattr(socket, "TCP_KEEPCNT"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, count)
+    if hasattr(socket, "SIO_KEEPALIVE_VALS"):
+        sock.ioctl(socket.SIO_KEEPALIVE_VALS, (1, idle * 1000, interval * 1000))
+
 def prompt_for_ip():
     while True:
         ip = input("Введите IP-адрес сервера: ").strip()
@@ -81,6 +94,7 @@ def connect_to_server(client_socket, server_ip, server_port, timeout=10):
     try:
         client_socket.settimeout(timeout)
         client_socket.connect((server_ip, server_port))
+        configure_keepalive(client_socket)
         tcp_conn = TcpConnection(client_socket)
         if connected(tcp_conn):
             result = (tcp_conn, LogTag.SUCCESS, f"Подключен к серверу {server_ip}:{server_port}")

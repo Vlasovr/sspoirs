@@ -122,7 +122,8 @@ class FileServer(File):
     @classmethod
     def release_lock(cls, filename):
         with cls.lock_f:
-            cls.file_locks.remove(filename)
+            if filename in cls.file_locks:
+                cls.file_locks.remove(filename)
 
     @classmethod
     def can_create_file_server(cls, filename):
@@ -150,7 +151,8 @@ class FileServer(File):
         now = time.time()
         result = None
         with cls.lock_s:
-            for idx, (ts, session) in enumerate(cls.stopped_sessions):
+            for idx in range(len(cls.stopped_sessions) - 1, -1, -1):
+                ts, session = cls.stopped_sessions[idx]
                 if session.get_id() == id and session.filename == filename and session.file_size == size:
                     cls.stopped_sessions.pop(idx)
                     result = session

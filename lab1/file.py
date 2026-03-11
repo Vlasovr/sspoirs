@@ -143,8 +143,9 @@ def handle_sever_download(conn, filepath):
         filepath = os.path.join(FILES_DIR, filepath)
     if not os.path.isfile(filepath):
         netstat.send_status(conn, f"Файл по пути '{filepath}' не найден.")
+        return
     filename = os.path.basename(filepath)
-    status = can_open_file(filepath, "r+b" )
+    status = can_open_file(filepath, "rb")
     netstat.send_status(conn, status)
     if status == netstat.OK:
         return upload(conn, filepath, filename)

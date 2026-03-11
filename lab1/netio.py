@@ -2,6 +2,7 @@ import bytes
 
 long_size = 8
 int_size = 4
+_line_buffers = {}
 
 class Commands:
     ECHO = "ECHO"
@@ -29,17 +30,20 @@ def r_int(conn):
     return int.from_bytes(data, 'big')
 
 def r_line(conn):
-    buffer = b""
+    buffer = _line_buffers.get(conn, b"")
     while True:
         try:
+            if b'\n' in buffer:
+                line, _, rest = buffer.partition(b'\n')
+                _line_buffers[conn] = rest
+                return line.decode(errors="ignore").strip()
             data = conn.recv(bytes.Size.KILOBYTE)
             if not data:
+                _line_buffers.pop(conn, None)
                 return None
             buffer += data
-            if b'\n' in buffer:
-                line, _, _ = buffer.partition(b'\n')
-                return line.decode().strip()
         except UnicodeDecodeError:
+            _line_buffers.pop(conn, None)
             return None
 
 def r_exact(conn, num_bytes):

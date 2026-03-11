@@ -1,25 +1,54 @@
 import socket
 import datetime
+import argparse
 import file
 import netio
 import cnsl
 import netstat
+import netregex
 from neterror import ClientDisconnected
 from cnsl import LogTag
 
-HOST = '25.30.102.155'
-PORT = 50505
+DEFAULT_HOST = "0.0.0.0"
+DEFAULT_PORT = 50505
+
+def configure_keepalive(sock, idle=30, interval=10, count=3):
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    if hasattr(socket, "TCP_KEEPIDLE"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, idle)
+    elif hasattr(socket, "TCP_KEEPALIVE"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, idle)
+    if hasattr(socket, "TCP_KEEPINTVL"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, interval)
+    if hasattr(socket, "TCP_KEEPCNT"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, count)
+    if hasattr(socket, "SIO_KEEPALIVE_VALS"):
+        sock.ioctl(socket.SIO_KEEPALIVE_VALS, (1, idle * 1000, interval * 1000))
+
+def get_server_args():
+    parser = argparse.ArgumentParser(description="TCP сервер ЛР1.")
+    parser.add_argument("host", nargs="?", default=DEFAULT_HOST)
+    parser.add_argument("port", nargs="?", type=int, default=DEFAULT_PORT)
+    args = parser.parse_args()
+
+    if not netregex.is_valid_ip(args.host):
+        raise ValueError(netregex.WRONG_IP_MESSAGE)
+    if not netregex.is_valid_port(str(args.port)):
+        raise ValueError(netregex.WRONG_PORT_MESSAGE)
+    return args.host, args.port
 
 def start_server():
+    host, port = get_server_args()
     cnsl.LOG_TYPE = cnsl.SERVER_TYPE
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
-        server.bind((HOST, PORT))
+        server.bind((host, port))
         server.listen()
-        cnsl.log(LogTag.SUCCESS, f"Сервер запущен на {HOST}:{PORT}")
+        cnsl.log(LogTag.SUCCESS, f"Сервер запущен на {host}:{port}")
         file.clear_last_session()
         while True:
             cnsl.log(LogTag.INFO, "Ожидание подключения клиента...")
             conn, addr = server.accept()
+            configure_keepalive(conn)
             conn.settimeout(30)
             file.prepare_new_client(conn.getpeername()[0])
             try:
@@ -100,6 +129,8 @@ def print_client_disconnect(addr):
 if __name__ == "__main__":
     try:
         start_server()
+    except ValueError as e:
+        cnsl.log(LogTag.ERROR, str(e))
     except KeyboardInterrupt:
         print("")
         pass

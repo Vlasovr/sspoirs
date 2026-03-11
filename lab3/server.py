@@ -13,6 +13,19 @@ from netio import TcpConnection
 inputs = []
 tcp_clients = {}
 
+def configure_keepalive(sock, idle=30, interval=10, count=3):
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    if hasattr(socket, "TCP_KEEPIDLE"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, idle)
+    elif hasattr(socket, "TCP_KEEPALIVE"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, idle)
+    if hasattr(socket, "TCP_KEEPINTVL"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, interval)
+    if hasattr(socket, "TCP_KEEPCNT"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, count)
+    if hasattr(socket, "SIO_KEEPALIVE_VALS"):
+        sock.ioctl(socket.SIO_KEEPALIVE_VALS, (1, idle * 1000, interval * 1000))
+
 def start_server():
     cnsl.LOG_TYPE = cnsl.SERVER_TYPE
     host, port = cnsl_parser.get_args()
@@ -31,8 +44,9 @@ def start_server():
         for sock in readable:
             if sock is tcp_sock:
                 client, addr = tcp_sock.accept()
+                configure_keepalive(client)
                 client.setblocking(False)
-                sock.settimeout(0.1)
+                client.settimeout(0.1)
                 conn = netio.TcpConnection(client)
                 add_new(conn)
                 tcp_clients[client] = conn
@@ -65,11 +79,12 @@ def add_new(conn):
     conn.has_session = False
 
 def resume_sessions():
-    for s in FileServer.file_sessions:
+    for s in list(FileServer.file_sessions):
         try:
             if not s.resume():
                s.conn.w_line(s.conclusion(True))
-               FileServer.file_sessions.remove(s)
+               if s in FileServer.file_sessions:
+                   FileServer.file_sessions.remove(s)
                add_new(s.conn)
             continue
         except FileError:
@@ -88,7 +103,8 @@ def resume_sessions():
                 pass
         if isinstance(s, DownloadSession):
             FileServer.save_session(s)
-        FileServer.file_sessions.remove(s)
+        if s in FileServer.file_sessions:
+            FileServer.file_sessions.remove(s)
         end_session(s.conn)
 
 def handle_client_tcp(conn):

@@ -8,6 +8,19 @@ from neterror import ClientDisconnected
 from cnsl import LogTag
 from netio import UdpConnection, TcpConnection
 
+def configure_keepalive(sock, idle=30, interval=10, count=3):
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    if hasattr(socket, "TCP_KEEPIDLE"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, idle)
+    elif hasattr(socket, "TCP_KEEPALIVE"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, idle)
+    if hasattr(socket, "TCP_KEEPINTVL"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, interval)
+    if hasattr(socket, "TCP_KEEPCNT"):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, count)
+    if hasattr(socket, "SIO_KEEPALIVE_VALS"):
+        sock.ioctl(socket.SIO_KEEPALIVE_VALS, (1, idle * 1000, interval * 1000))
+
 def start_server():
     cnsl.LOG_TYPE = cnsl.SERVER_TYPE
     host, port = cnsl_parser.get_args()
@@ -33,6 +46,7 @@ def handle_client_tcp(sock):
         client, addr = sock.accept()
     except socket.timeout:
         return
+    configure_keepalive(client)
     client.settimeout(30)
     cnsl.log(LogTag.PLUS, f"[TCP] Клиент подключен: {addr}")
     conn = netio.TcpConnection(client)

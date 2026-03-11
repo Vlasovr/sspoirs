@@ -140,8 +140,9 @@ def handle_sever_download(conn: NetConnection, filepath):
         filepath = os.path.join(FILES_DIR, filepath)
     if not os.path.isfile(filepath):
         conn.send_status(f"Файл по пути '{filepath}' не найден.")
+        return
     filename = os.path.basename(filepath)
-    status = can_open_file(filepath, "r+b")
+    status = can_open_file(filepath, "rb")
     conn.send_status(status)
     if status == netio.OK:
         return upload(conn, filepath, filename)

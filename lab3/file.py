@@ -114,14 +114,8 @@ class FileServer(File):
         result = cls.can_create_file(filename)
         if result == netio.OK:
             for s in cls.file_sessions:
-                if s.filename == filename:
-                    return "Файл с таким названием загружает другой клиент"
-            for s in cls.file_sessions:
-                if s.filename == filename:
-                    if s.conn.get_addr() != conn.get_addr():
-                        return "Файл с таким названием занят другим клиентом"
-                    else:
-                        return netio.OK
+                if s.filename == filename and s.conn.get_addr() != conn.get_addr():
+                    return "Файл с таким названием занят другим клиентом"
         return result
 
     @classmethod
@@ -141,7 +135,8 @@ class FileServer(File):
     def get_uncompleted_session(cls, id, filename, size):
         now = time.time()
         result = None
-        for idx, (ts, session) in enumerate(cls.stopped_sessions):
+        for idx in range(len(cls.stopped_sessions) - 1, -1, -1):
+            ts, session = cls.stopped_sessions[idx]
             if session.get_id() == id and session.filename == filename and session.file_size == size:
                 cls.stopped_sessions.pop(idx)
                 result = session
