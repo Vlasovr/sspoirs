@@ -131,6 +131,13 @@ def md5(data):
     return hashlib.md5(data).hexdigest()
 
 
+def describe_error(exc: Exception):
+    text = str(exc)
+    if text:
+        return f"{type(exc).__name__}: {text}"
+    return f"{type(exc).__name__}: {exc!r}"
+
+
 def format_speed(byte_count, duration):
     if duration <= 0:
         return "0 B/s"
@@ -521,8 +528,10 @@ def check_lab2(host, port, manage_server=True, lab1_tcp_host=None, lab1_tcp_port
     server = ServerProcess(lab_dir, host, port) if manage_server else None
     payload = random_payload(4 * 1024 * 1024)
     fname_udp = unique_name("autocheck_l2_udp")
+    phase = "initializing"
 
     try:
+        phase = "preparing lab1 TCP baseline"
         baseline_host = lab1_tcp_host or host
         baseline_port = lab1_tcp_port
         baseline_manage_server = manage_server
@@ -534,6 +543,7 @@ def check_lab2(host, port, manage_server=True, lab1_tcp_host=None, lab1_tcp_port
                 "Start lab1/server.py on another port and pass --lab1-tcp-port."
             )
 
+        phase = "running lab1 TCP baseline"
         lab1_tcp = run_lab1_tcp_baseline(
             baseline_host,
             baseline_port,
@@ -542,19 +552,26 @@ def check_lab2(host, port, manage_server=True, lab1_tcp_host=None, lab1_tcp_port
         )
 
         if manage_server:
+            phase = "starting lab2 server"
             cleanup_lab_file(lab_dir, fname_udp)
             server.start()
 
+        phase = "loading lab2 UDP client module"
         netio = load_netio_module(lab_dir)
+        phase = "creating UDP client"
         u = UdpClient(netio, host, port, timeout=15)
 
+        phase = "checking UDP TIME"
         u.conn.send_command("TIME")
         udp_time = u.conn.r_line()
 
+        phase = "uploading via UDP"
         udp_up = udp_upload(u, fname_udp, payload)
+        phase = "downloading via UDP"
         udp_data, udp_down_resp, udp_down_dt = udp_download(u, fname_udp, chunk_size=256 * 1024)
         u.close()
 
+        phase = "verifying UDP hash"
         if md5(udp_data) != md5(payload):
             raise AssertionError("lab2 udp hash mismatch")
 
@@ -591,10 +608,10 @@ def check_lab2(host, port, manage_server=True, lab1_tcp_host=None, lab1_tcp_port
         )
 
     except Exception as e:
-        details = {"host": host, "port": port}
+        details = {"host": host, "port": port, "phase": phase}
         if server:
             details["logs"] = server.tail_logs(30)
-        return CheckResult("lab2", False, details, str(e))
+        return CheckResult("lab2", False, details, describe_error(e))
     finally:
         if server:
             server.stop()
