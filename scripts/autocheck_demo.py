@@ -227,20 +227,20 @@ def tcp_upload_status_before(session: TcpSession, filename: str, payload: bytes,
     return {"offset": offset, "response": response}
 
 
-def tcp_download_status_before(session: TcpSession, filename: str):
+def tcp_download_status_before(session: TcpSession, filename: str, chunk_size=64 * 1024):
     session.write_line(f"DOWNLOAD {filename}")
     status = session.readline()
     if status != "OK":
         raise AssertionError(f"DOWNLOAD rejected: {status}")
 
-    session.write_u64(64 * 1024)
+    session.write_u64(chunk_size)
     file_size = session.read_u64()
     session.write_u64(0)
 
     t0 = time.time()
     data = session.read_exact(file_size)
-    dt = time.time() - t0
     response = session.readline()
+    dt = time.time() - t0
     return data, response, dt
 
 
@@ -271,21 +271,21 @@ def tcp_upload_status_after(session: TcpSession, filename: str, payload: bytes, 
     return response, time.time() - t0
 
 
-def tcp_download_status_after(session: TcpSession, filename: str):
+def tcp_download_status_after(session: TcpSession, filename: str, chunk_size=64 * 1024):
     session.write_line(f"DOWNLOAD {filename}")
     status = session.readline()
     if status != "OK":
         raise AssertionError(f"DOWNLOAD rejected: {status}")
 
-    session.write_u64(64 * 1024)
+    session.write_u64(chunk_size)
     file_size = session.read_u64()
     session.write_u64(0)
 
     t0 = time.time()
     data = session.read_exact(file_size)
-    dt = time.time() - t0
 
     response = session.readline()
+    dt = time.time() - t0
     ready = session.readline()
     if ready != "OK":
         raise AssertionError(f"missing ready status after download: {ready}")
@@ -347,14 +347,13 @@ def udp_upload(client: UdpClient, filename: str, payload: bytes, stop_after=None
     return {"offset": offset, "response": response, "duration": time.time() - t0}
 
 
-def udp_download(client: UdpClient, filename: str):
+def udp_download(client: UdpClient, filename: str, chunk_size=64 * 1024):
     conn = client.conn
     conn.send_command(f"DOWNLOAD {filename}")
     status = conn.get_status()
     if status != "OK":
         raise AssertionError(f"DOWNLOAD rejected: {status}")
 
-    chunk_size = 64 * 1024
     conn.w_long(chunk_size)
     file_size = conn.r_long()
     conn.w_long(0)
@@ -364,8 +363,8 @@ def udp_download(client: UdpClient, filename: str):
     while len(data) < file_size:
         need = min(chunk_size, file_size - len(data))
         data.extend(conn.r_exact(need))
-    dt = time.time() - t0
     response = conn.r_line()
+    dt = time.time() - t0
     return bytes(data), response, dt
 
 
@@ -373,6 +372,60 @@ def cleanup_lab_file(lab_dir: Path, filename: str):
     file_path = lab_dir / "files" / filename
     if file_path.exists():
         file_path.unlink()
+
+
+def run_lab1_tcp_baseline(host, port, payload, manage_server=True):
+    lab_dir = ROOT / "lab1"
+    server = ServerProcess(lab_dir, host, port) if manage_server else None
+    fname = unique_name("autocheck_l1_tcp_baseline")
+    session = None
+
+    try:
+        if manage_server:
+            cleanup_lab_file(lab_dir, fname)
+            server.start()
+
+        session = TcpSession.connect(host, port)
+        expect_status(session)
+
+        t0 = time.time()
+        upload = tcp_upload_status_before(session, fname, payload)
+        upload_dt = time.time() - t0
+        expect_status(session)
+
+        downloaded, download_response, download_dt = tcp_download_status_before(
+            session,
+            fname,
+            chunk_size=8 * 1024,
+        )
+        expect_status(session)
+        session.close()
+
+        if md5(downloaded) != md5(payload):
+            raise AssertionError("lab1 tcp baseline hash mismatch")
+        if "успешно" not in upload["response"].lower():
+            raise AssertionError(f"unexpected lab1 upload response: {upload['response']}")
+        if "успешно" not in download_response.lower():
+            raise AssertionError(f"unexpected lab1 download response: {download_response}")
+
+        return {
+            "host": host,
+            "port": port,
+            "upload_response": upload["response"],
+            "download_response": download_response,
+            "upload_duration": upload_dt,
+            "download_duration": download_dt,
+        }
+    finally:
+        if session:
+            try:
+                session.close()
+            except Exception:
+                pass
+        if server:
+            server.stop()
+        if manage_server:
+            cleanup_lab_file(lab_dir, fname)
 
 
 def check_lab1(host, port, manage_server=True):
@@ -463,37 +516,35 @@ def check_lab1(host, port, manage_server=True):
             cleanup_lab_file(lab_dir, fname)
 
 
-def check_lab2(host, port, manage_server=True):
+def check_lab2(host, port, manage_server=True, lab1_tcp_host=None, lab1_tcp_port=None):
     lab_dir = ROOT / "lab2"
     server = ServerProcess(lab_dir, host, port) if manage_server else None
     payload = random_payload(4 * 1024 * 1024)
-    fname_tcp = unique_name("autocheck_l2_tcp")
     fname_udp = unique_name("autocheck_l2_udp")
 
     try:
+        baseline_host = lab1_tcp_host or host
+        baseline_port = lab1_tcp_port
+        baseline_manage_server = manage_server
         if manage_server:
-            cleanup_lab_file(lab_dir, fname_tcp)
+            baseline_port = find_free_port(bind_host=host)
+        elif baseline_port is None:
+            raise RuntimeError(
+                "lab1 TCP baseline is not configured for external mode. "
+                "Start lab1/server.py on another port and pass --lab1-tcp-port."
+            )
+
+        lab1_tcp = run_lab1_tcp_baseline(
+            baseline_host,
+            baseline_port,
+            payload,
+            manage_server=baseline_manage_server,
+        )
+
+        if manage_server:
             cleanup_lab_file(lab_dir, fname_udp)
             server.start()
 
-        # TCP baseline
-        c = TcpSession.connect(host, port)
-        expect_status(c)
-
-        t0 = time.time()
-        tcp_up = tcp_upload_status_before(c, fname_tcp, payload)
-        tcp_up_dt = time.time() - t0
-        expect_status(c)
-
-        t0 = time.time()
-        tcp_data, tcp_down_resp, tcp_down_dt = tcp_download_status_before(c, fname_tcp)
-        expect_status(c)
-        c.close()
-
-        if md5(tcp_data) != md5(payload):
-            raise AssertionError("lab2 tcp hash mismatch")
-
-        # UDP path
         netio = load_netio_module(lab_dir)
         u = UdpClient(netio, host, port, timeout=15)
 
@@ -501,15 +552,19 @@ def check_lab2(host, port, manage_server=True):
         udp_time = u.conn.r_line()
 
         udp_up = udp_upload(u, fname_udp, payload)
-        udp_data, udp_down_resp, udp_down_dt = udp_download(u, fname_udp)
+        udp_data, udp_down_resp, udp_down_dt = udp_download(u, fname_udp, chunk_size=256 * 1024)
         u.close()
 
         if md5(udp_data) != md5(payload):
             raise AssertionError("lab2 udp hash mismatch")
 
-        tcp_total_speed = len(payload) / max(tcp_down_dt, 1e-6)
+        tcp_total_speed = len(payload) / max(lab1_tcp["download_duration"], 1e-6)
         udp_total_speed = len(payload) / max(udp_down_dt, 1e-6)
         ratio = udp_total_speed / max(tcp_total_speed, 1e-6)
+        upload_ratio = (
+            (len(payload) / max(udp_up["duration"], 1e-6))
+            / max(len(payload) / max(lab1_tcp["upload_duration"], 1e-6), 1e-6)
+        )
 
         return CheckResult(
             lab="lab2",
@@ -517,16 +572,21 @@ def check_lab2(host, port, manage_server=True):
             details={
                 "host": host,
                 "port": port,
-                "tcp_upload_response": tcp_up["response"],
-                "tcp_download_response": tcp_down_resp,
+                "tcp_baseline_lab": "lab1",
+                "lab1_tcp_host": lab1_tcp["host"],
+                "lab1_tcp_port": lab1_tcp["port"],
+                "lab1_tcp_upload_response": lab1_tcp["upload_response"],
+                "lab1_tcp_download_response": lab1_tcp["download_response"],
                 "udp_upload_response": udp_up["response"],
                 "udp_download_response": udp_down_resp,
                 "udp_time_response": udp_time,
-                "tcp_download_speed": format_speed(len(payload), tcp_down_dt),
+                "lab1_tcp_download_speed": format_speed(len(payload), lab1_tcp["download_duration"]),
                 "udp_download_speed": format_speed(len(payload), udp_down_dt),
-                "udp_vs_tcp_ratio": round(ratio, 2),
-                "tcp_upload_speed": format_speed(len(payload), tcp_up_dt),
+                "udp_vs_lab1_tcp_download_ratio": round(ratio, 2),
+                "lab1_tcp_upload_speed": format_speed(len(payload), lab1_tcp["upload_duration"]),
                 "udp_upload_speed": format_speed(len(payload), udp_up["duration"]),
+                "udp_vs_lab1_tcp_upload_ratio": round(upload_ratio, 2),
+                "udp_download_is_1_5x_lab1_tcp": ratio >= 1.5,
             },
         )
 
@@ -539,7 +599,6 @@ def check_lab2(host, port, manage_server=True):
         if server:
             server.stop()
         if manage_server:
-            cleanup_lab_file(lab_dir, fname_tcp)
             cleanup_lab_file(lab_dir, fname_udp)
 
 
@@ -791,14 +850,33 @@ def resolve_ports(selected_labs, host, manage_server, global_port=None, mapped_p
     return lab_port_map
 
 
-def run_checks(selected_labs, host, manage_server, global_port=None, mapped_ports=None):
+def run_checks(
+    selected_labs,
+    host,
+    manage_server,
+    global_port=None,
+    mapped_ports=None,
+    lab1_tcp_host=None,
+    lab1_tcp_port=None,
+):
     checks = []
     lab_port_map = resolve_ports(selected_labs, host, manage_server, global_port=global_port, mapped_ports=mapped_ports)
+    baseline_port = lab1_tcp_port
+    if baseline_port is None and mapped_ports and "lab1" in mapped_ports:
+        baseline_port = mapped_ports["lab1"]
 
     if "lab1" in selected_labs:
         checks.append(check_lab1(host, lab_port_map["lab1"], manage_server=manage_server))
     if "lab2" in selected_labs:
-        checks.append(check_lab2(host, lab_port_map["lab2"], manage_server=manage_server))
+        checks.append(
+            check_lab2(
+                host,
+                lab_port_map["lab2"],
+                manage_server=manage_server,
+                lab1_tcp_host=lab1_tcp_host,
+                lab1_tcp_port=baseline_port,
+            )
+        )
     if "lab3" in selected_labs:
         checks.append(check_lab3(host, lab_port_map["lab3"], manage_server=manage_server))
     if "lab4" in selected_labs:
@@ -854,6 +932,17 @@ def main():
         action="store_true",
         help="Do not start local servers; connect to already running server(s).",
     )
+    parser.add_argument(
+        "--lab1-tcp-host",
+        default="",
+        help="Host of the lab1 TCP server used as the lab2 UDP comparison baseline.",
+    )
+    parser.add_argument(
+        "--lab1-tcp-port",
+        type=int,
+        default=None,
+        help="Port of the lab1 TCP server used as the lab2 UDP comparison baseline.",
+    )
     parser.add_argument("--json", default="", help="Optional path to write JSON report.")
     args = parser.parse_args()
 
@@ -876,6 +965,8 @@ def main():
             manage_server=manage_server,
             global_port=args.port,
             mapped_ports=mapped_ports,
+            lab1_tcp_host=args.lab1_tcp_host.strip() or None,
+            lab1_tcp_port=args.lab1_tcp_port,
         )
     except ValueError as e:
         print(f"Argument error: {e}")

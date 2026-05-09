@@ -40,4 +40,4 @@ class ProgressTracker:
                 cnsl.print_inline(f"Загрузка: {progress}% ({received_str} / {total_str}), скорость: {speed}")
                 last_progress_time = current_time
                 last_received = received
-            time.sleep(interval)
+            time.sleep(0.05)
