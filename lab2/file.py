@@ -168,7 +168,7 @@ def handle_client_upload(conn: NetConnection, message):
     if status != netio.OK:
         if status == netio.CONNECTION_CLOSED:
             raise ConnectionClosed
-        print(f"⏺ Ошибка: {status}")
+        print(f"> Ошибка: {status}")
         raise ServerError
     filename = os.path.basename(filepath.rstrip("/\\"))
     upload(conn, filepath, filename)
@@ -183,7 +183,7 @@ def handle_client_download(conn: NetConnection, message):
     if status != netio.OK:
         if status == netio.CONNECTION_CLOSED:
             raise ConnectionClosed
-        print(f"⏺ Ошибка: {status}")
+        print(f"> Ошибка: {status}")
         raise ServerError
     download(conn, filename)
 
@@ -252,15 +252,17 @@ def download(conn: NetConnection, filename):
 
     tracker = ProgressTracker()
     prepare_load(tracker, received, file_size)
+    transfer_end = None
     try:
         with prepare_file(filepath, received) as file:
             success = receive_file_chunks(file, conn, file_size, tracker)
+            transfer_end = time.time()
     finally:
         end_load(tracker)
 
     if success:
         finalize_download(filepath, final_path)
-        speed = netbytes.calculate_speed(start_time, time.time(), file_size - start_size)
+        speed = netbytes.calculate_speed(start_time, transfer_end or time.time(), file_size - start_size)
         result_str = f"Файл {filename} успешно загружен. Скорость: {speed}"
         cnsl.log(LogTag.SUCCESS, f"{result_str}")
     else:
@@ -292,14 +294,16 @@ def upload(conn: NetConnection, filepath, filename):
 
     tracker = ProgressTracker()
     prepare_load(tracker, bytes_sent, file_size)
+    transfer_end = None
     try:
         with prepare_file(filepath, start_offset) as file:
             success = send_file_chunks(file, conn, chunk_size, file_size, tracker)
+            transfer_end = time.time()
     finally:
         end_load(tracker)
 
     if success:
-        speed = netbytes.calculate_speed(start_time, time.time(), file_size - start_offset)
+        speed = netbytes.calculate_speed(start_time, transfer_end or time.time(), file_size - start_offset)
         result_str = f"Файл {filename} успешно отправлен. Скорость: {speed}"
         cnsl.log(LogTag.SUCCESS, f"{result_str}")
     else:

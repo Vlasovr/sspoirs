@@ -110,11 +110,12 @@ class UdpConnection(NetConnection):
     ACK_TIMEOUT = 0.1
     ACK_RESEND_INTERVAL = 0.05
     READ_TIMEOUT = 0.5
+    SOCKET_BUFFER_SIZE = 4 * netbytes.Size.MEGABYTE
     CRC_SIZE = 4
     SEQ_SIZE = 4
     SESS_SIZE = 4
-    WINDOW_SIZE = 256
-    PAYLOAD_SIZE = 900
+    WINDOW_SIZE = 64
+    PAYLOAD_SIZE = 1400
     WINDOW_FULL_MASK = (1 << WINDOW_SIZE) - 1
     HEADER_SIZE = SESS_SIZE + CRC_SIZE + SEQ_SIZE
     TOTAL_SIZE = HEADER_SIZE + PAYLOAD_SIZE
@@ -125,6 +126,8 @@ class UdpConnection(NetConnection):
 
     def __init__(self, sock, addr, timeout = NetConnection.DEFAULT_TIMEOUT):
         super().__init__(sock, addr)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, self.SOCKET_BUFFER_SIZE)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.SOCKET_BUFFER_SIZE)
         self.timeout = timeout
         self._transmit_id = 0
         self._last_receive_id = -1
@@ -284,7 +287,7 @@ class UdpConnection(NetConnection):
                     delayed_acks += 1
                 expected_seq += 1
             elif delta < self.WINDOW_SIZE:
-                idx = (seq - 1) % self.WINDOW_SIZE
+                idx = seq % self.WINDOW_SIZE
                 bit = 1 << delta
                 if not (window_mask & bit):
                     self._win_pkts[idx] = payload

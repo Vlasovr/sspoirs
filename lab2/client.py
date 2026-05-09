@@ -188,7 +188,7 @@ def communicate_with_server(conn):
         conn.send_command(message)
     response = conn.r_line()
     if response:
-        print(f"⏺ {response.rstrip()}")
+        print(f"> {response.rstrip()}")
     else:
         return False
     return True
