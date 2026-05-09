@@ -2,8 +2,8 @@ import sys
 import cnsl
 import netregex
 
-DEFAULT_IP = "192.168.100.7"
-DEFAULT_PORT = 50500
+DEFAULT_IP = "0.0.0.0"
+DEFAULT_PORT = 0
 
 def parse_args():
     args = {'host': DEFAULT_IP, 'port': DEFAULT_PORT}
@@ -39,7 +39,7 @@ def get_args():
     if not netregex.is_valid_ip(host):
         exit_with_parse_error(netregex.WRONG_IP_MESSAGE)
 
-    if not netregex.is_valid_port(str(port)):
+    if not (cnsl.LOG_TYPE == cnsl.CLIENT_TYPE and port == 0) and not netregex.is_valid_port(str(port)):
         exit_with_parse_error(netregex.WRONG_PORT_MESSAGE)
 
     return host, port

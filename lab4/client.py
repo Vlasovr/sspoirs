@@ -135,7 +135,7 @@ def communicate_with_server(conn):
 
     response = conn.r_line()
     if response:
-        print(f"⏺ {response.rstrip()}")
+        print(f"> {response.rstrip()}")
         return True
     return False
 

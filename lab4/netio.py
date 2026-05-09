@@ -36,7 +36,7 @@ def peek_next_sender(sock, max_size=2048):
         try:
             _, addr = sock.recvfrom(max_size, socket.MSG_PEEK)
             return addr
-        except (BlockingIOError, socket.timeout):
+        except (BlockingIOError, socket.timeout, ConnectionResetError):
             return None
 
 
@@ -257,7 +257,7 @@ class UdpConnection(NetConnection):
                             self.reset_timeout()
                             return packet
                 time.sleep(0.001)
-            except (BlockingIOError, socket.timeout):
+            except (BlockingIOError, socket.timeout, ConnectionResetError):
                 time.sleep(0.001)
 
     def r_line(self):
@@ -465,7 +465,7 @@ class UdpConnection(NetConnection):
     def _send(self, data: bytes):
         try:
             self.sock.sendto(data, self.addr)
-        except socket.timeout:
+        except (socket.timeout, ConnectionResetError):
             return
 
     def _send_final_sack(self, final_seq: int):

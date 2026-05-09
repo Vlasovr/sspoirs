@@ -320,7 +320,7 @@ class FileClient(File):
         if status != netio.OK:
             if status == netio.CONNECTION_CLOSED:
                 raise ConnectionClosed
-            print(f"⏺ Ошибка: {status}")
+            print(f"> Ошибка: {status}")
             raise ServerError
         filename = os.path.basename(filepath.rstrip("/\\"))
         cls.upload(conn, filepath, filename)
@@ -336,7 +336,7 @@ class FileClient(File):
         if status != netio.OK:
             if status == netio.CONNECTION_CLOSED:
                 raise ConnectionClosed
-            print(f"⏺ Ошибка: {status}")
+            print(f"> Ошибка: {status}")
             raise ServerError
         cls.download(conn, filename)
 

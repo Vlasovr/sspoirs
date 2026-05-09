@@ -112,9 +112,7 @@ def process_user_input():
         return message
 
 def create_socket():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind((cnsl_parser.DEFAULT_IP, cnsl_parser.DEFAULT_PORT))
-    return sock
+    return socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
 def close_connection(client_socket):
     client_socket.close()
@@ -170,7 +168,7 @@ def communicate_with_server(conn):
         conn.send_command(message)
     response = conn.r_line()
     if response:
-        print(f"⏺ {response.rstrip()}")
+        print(f"> {response.rstrip()}")
     else:
         return False
     return True
