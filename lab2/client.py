@@ -130,7 +130,8 @@ def process_user_input():
 
 def create_socket(protocol):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM if protocol == TCP else socket.SOCK_DGRAM)
-    sock.bind((cnsl_parser.DEFAULT_IP, cnsl_parser.DEFAULT_PORT))
+    if protocol == UDP:
+        sock.bind(("0.0.0.0", 0))
     return sock
 
 def close_connection(client_socket):

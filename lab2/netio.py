@@ -239,9 +239,9 @@ class UdpConnection(NetConnection):
             except socket.timeout:
                 continue
 
-            if addr != self.addr:
-                if self.addr is None:
-                    self.addr = addr
+            if self.addr is None:
+                self.addr = addr
+            elif addr != self.addr:
                 continue
 
             try:
