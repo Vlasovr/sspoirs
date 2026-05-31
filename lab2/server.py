@@ -21,6 +21,16 @@ def configure_keepalive(sock, idle=30, interval=10, count=3):
     if hasattr(socket, "SIO_KEEPALIVE_VALS"):
         sock.ioctl(socket.SIO_KEEPALIVE_VALS, (1, idle * 1000, interval * 1000))
 
+def configure_udp_buffers(sock, buffer_size=4 * 1024 * 1024):
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, buffer_size)
+    except (OSError, socket.error):
+        pass
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, buffer_size)
+    except (OSError, socket.error):
+        pass
+
 def start_server():
     cnsl.LOG_TYPE = cnsl.SERVER_TYPE
     host, port = cnsl_parser.get_args()
@@ -30,6 +40,7 @@ def start_server():
     tcp_sock.setblocking(False)
 
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    configure_udp_buffers(udp_sock)
     udp_sock.bind((host, port))
     udp_sock.setblocking(False)
 

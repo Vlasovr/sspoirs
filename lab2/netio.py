@@ -107,21 +107,28 @@ class TcpConnection(NetConnection):
 
 
 class UdpConnection(NetConnection):
-    ACK_TIMEOUT = 0.1
+    # RTO (время ожидания SACK) увеличено с запасом на накопление delayed-ACK
+    ACK_TIMEOUT = 0.3
     ACK_RESEND_INTERVAL = 0.05
     READ_TIMEOUT = 0.5
     CRC_SIZE = 4
     SEQ_SIZE = 4
     SESS_SIZE = 4
     WINDOW_SIZE = 256
-    PAYLOAD_SIZE = 900
+    # PAYLOAD_SIZE подобран под Ethernet MTU 1500:
+    # 1500 - 20 (IP) - 8 (UDP) = 1472 байт UDP-payload, минус 12 байт нашего заголовка = 1460
+    PAYLOAD_SIZE = 1460
     WINDOW_FULL_MASK = (1 << WINDOW_SIZE) - 1
     HEADER_SIZE = SESS_SIZE + CRC_SIZE + SEQ_SIZE
     TOTAL_SIZE = HEADER_SIZE + PAYLOAD_SIZE
+    # Ширина SACK-маски равна размеру окна: один SACK покрывает всё окно (256 бит = 32 байта)
+    SACK_MASK_BITS = WINDOW_SIZE
+    SACK_MASK_BYTES = (SACK_MASK_BITS + 7) // 8
+    SACK_FULL_MASK = (1 << SACK_MASK_BITS) - 1
+    # Порог накопления delayed-ACK (как часто приёмник шлёт SACK), не связан с шириной маски
     ACK_DELAY = WINDOW_SIZE // 4
-    ACK_DELAY_MASK = (1 << ACK_DELAY) - 1
-    ACK_DELAY_BYTE_COUNT = (ACK_DELAY + 7) // 8
-    ACK_SIZE = SESS_SIZE + SEQ_SIZE + ACK_DELAY_BYTE_COUNT + CRC_SIZE
+    ACK_SIZE = SESS_SIZE + SEQ_SIZE + SACK_MASK_BYTES + CRC_SIZE
+    SOCK_BUFFER_SIZE = 4 * 1024 * 1024
 
     def __init__(self, sock, addr, timeout = NetConnection.DEFAULT_TIMEOUT):
         super().__init__(sock, addr)
@@ -133,11 +140,24 @@ class UdpConnection(NetConnection):
         self._last_ack_expected_seq = 0
         self._last_ack_time = 0.0
         self._hdr_struct = struct.Struct('!III')
-        self._ack_struct = struct.Struct(f'!II{self.ACK_DELAY_BYTE_COUNT}sI')
+        self._ack_struct = struct.Struct(f'!II{self.SACK_MASK_BYTES}sI')
         self._crc32 = zlib.crc32
         self._time = time.monotonic
+        # Отдельные буферы для отправки и приёма (раньше делили один и тот же — баг индексации)
         self._win_pkts = [b''] * self.WINDOW_SIZE
         self._win_seqs = [-1] * self.WINDOW_SIZE
+        self._recv_pkts = [b''] * self.WINDOW_SIZE
+        self._tune_socket_buffers()
+
+    def _tune_socket_buffers(self):
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, self.SOCK_BUFFER_SIZE)
+        except (OSError, socket.error):
+            pass
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.SOCK_BUFFER_SIZE)
+        except (OSError, socket.error):
+            pass
 
     def r_line(self):
         data = self._receive_udp_until(lambda buf: b'\n' in buf)
@@ -149,14 +169,17 @@ class UdpConnection(NetConnection):
     def w_data(self, data: bytes):
         mv = memoryview(data)
         total_len = len(mv)
-        offset = 0
-        seq = 0
-        now = self._time
-        max_time = self._time() + self.timeout
-        window_mask = 0
-        window_full_mask = self.WINDOW_FULL_MASK
+        payload_size = self.PAYLOAD_SIZE
+        window_size = self.WINDOW_SIZE
+        # Число датаграмм для этого блока; нумерация seq начинается с 0
+        seq_count = (total_len + payload_size - 1) // payload_size if total_len > 0 else 0
+
         self._transmit_id = (self._transmit_id + 1) & MASK32
         self.sock.settimeout(self.ACK_TIMEOUT)
+
+        # Сброс возможного остаточного состояния приёмной роли
+        now = self._time
+        max_time = now() + self.timeout
         while self._last_ack:
             try:
                 if max_time <= now():
@@ -168,26 +191,36 @@ class UdpConnection(NetConnection):
             except socket.timeout:
                 self._last_ack = None
 
-        while offset < total_len or window_mask != 0:
-            if max_time <= now():
-                raise socket.timeout
-            while offset < total_len:
-                temp_mask = ~window_mask & window_full_mask
-                if temp_mask == 0:
-                    break
-                idx = (temp_mask & -temp_mask).bit_length() - 1
-                remaining = total_len - offset
-                payload_len = remaining if remaining < self.PAYLOAD_SIZE else self.PAYLOAD_SIZE
-                payload = mv[offset:offset + payload_len]
-                crc = self._calculate_crc(payload)
-                packet = self._build_packet(crc, seq, payload)
-                self._send(packet)
-                self._win_seqs[idx] = seq
-                self._win_pkts[idx] = packet
-                window_mask |= (1 << idx)
-                offset += payload_len
-                seq += 1
+        if seq_count == 0:
+            return
 
+        pkts = self._win_pkts
+        acked = bytearray(seq_count)  # 1 == пакет точно получен приёмником (по SACK-маске)
+        base = 0           # самый старый ещё не подтверждённый seq (нижняя граница окна)
+        next_seq = 0       # следующий seq для первичной отправки
+
+        deadline = now() + self.timeout
+
+        while base < seq_count:
+            if deadline <= now():
+                raise socket.timeout
+
+            # Заполняем окно новыми пакетами в пределах [base, base + WINDOW_SIZE)
+            window_top = base + window_size
+            while next_seq < seq_count and next_seq < window_top:
+                off = next_seq * payload_size
+                end = off + payload_size
+                if end > total_len:
+                    end = total_len
+                payload = mv[off:end]
+                crc = self._calculate_crc(payload)
+                packet = self._build_packet(crc, next_seq, payload)
+                pkts[next_seq % window_size] = packet
+                self._send(packet)
+                next_seq += 1
+
+            # Собираем все доступные SACK в пределах RTO
+            progressed = False
             while True:
                 try:
                     sack = self._get_sack()
@@ -197,26 +230,35 @@ class UdpConnection(NetConnection):
                     continue
 
                 max_seq, mask = sack
+                new_base = max_seq + 1
+                if new_base > base:
+                    base = new_base
+                    progressed = True
 
-                temp_mask = window_mask
-                while temp_mask:
-                    i = (temp_mask & -temp_mask).bit_length() - 1
-                    temp_seq = self._win_seqs[i]
-                    delta = temp_seq - (max_seq + 1)
+                # Отмечаем выборочно подтверждённые (out-of-order) пакеты выше base
+                d = 0
+                m = mask
+                while m:
+                    if m & 1:
+                        s = max_seq + 1 + d
+                        if 0 <= s < seq_count:
+                            acked[s] = 1
+                    m >>= 1
+                    d += 1
 
-                    if temp_seq <= max_seq or (0 <= delta < self.ACK_DELAY and ((mask >> delta) & 1)):
-                        window_mask &= ~(1 << i)
-
-                    temp_mask &= temp_mask - 1
-
-                if window_mask == 0:
+                if base >= seq_count:
                     break
 
-            temp_mask = window_mask
-            while temp_mask:
-                i = (temp_mask & -temp_mask).bit_length() - 1
-                self._send(self._win_pkts[i])
-                temp_mask &= temp_mask - 1
+            if base >= seq_count:
+                break
+
+            if not progressed:
+                # RTO без продвижения окна: ретрансмитим самый старый реально неподтверждённый пакет
+                s = base
+                while s < next_seq and acked[s]:
+                    s += 1
+                if s < next_seq:
+                    self._send(pkts[s % window_size])
 
     def send_command(self, data):
         self._last_receive_id = -1
@@ -231,6 +273,8 @@ class UdpConnection(NetConnection):
         delayed_acks = 0
         start_time = self._time()
         new_sess = False
+        window_size = self.WINDOW_SIZE
+        recv_pkts = self._recv_pkts
         while True:
             if start_time + self.timeout <= self._time():
                 raise socket.timeout
@@ -273,21 +317,23 @@ class UdpConnection(NetConnection):
 
             delta = seq - expected_seq
             if delta == 0:
+                # In-order пакет: добавляем и сливаем все подряд идущие буферизованные
                 assembled.extend(payload)
                 delayed_acks += 1
+                expected_seq += 1
                 window_mask >>= 1
                 while window_mask & 1:
-                    idx = expected_seq % self.WINDOW_SIZE
-                    assembled.extend(self._win_pkts[idx])
+                    idx = expected_seq % window_size
+                    assembled.extend(recv_pkts[idx])
                     window_mask >>= 1
                     expected_seq += 1
                     delayed_acks += 1
-                expected_seq += 1
-            elif delta < self.WINDOW_SIZE:
-                idx = (seq - 1) % self.WINDOW_SIZE
+            elif delta < window_size:
+                # Out-of-order: единая индексация seq % WINDOW_SIZE (совпадает с чтением)
+                idx = seq % window_size
                 bit = 1 << delta
                 if not (window_mask & bit):
-                    self._win_pkts[idx] = payload
+                    recv_pkts[idx] = bytes(payload)
                     window_mask |= bit
                     delayed_acks += 1
 
@@ -318,7 +364,7 @@ class UdpConnection(NetConnection):
             return
 
         start = self.SESS_SIZE
-        length = start + self.SEQ_SIZE + self.ACK_DELAY_BYTE_COUNT
+        length = start + self.SEQ_SIZE + self.SACK_MASK_BYTES
 
         if not self._is_valid_crc(packet[start:length], crc_received):
             return
@@ -349,8 +395,8 @@ class UdpConnection(NetConnection):
             self._last_ack_time = now
 
     def _build_sack(self, session_id, max_seq, mask):
-        mask &= (1 << self.ACK_DELAY) - 1
-        mask_bytes = mask.to_bytes(self.ACK_DELAY_BYTE_COUNT, 'big')
+        mask &= self.SACK_FULL_MASK
+        mask_bytes = mask.to_bytes(self.SACK_MASK_BYTES, 'big')
         crc_input = bytearray()
         crc_input.extend(max_seq.to_bytes(self.SEQ_SIZE, 'big'))
         crc_input.extend(mask_bytes)
@@ -363,9 +409,12 @@ class UdpConnection(NetConnection):
             crc
         )
 
-    def _build_packet(self, crc: int, seq: int, payload: memoryview | bytes) -> bytes:
-        hdr = self._hdr_struct.pack(self._transmit_id, crc, seq)
-        return hdr + payload.tobytes()
+    def _build_packet(self, crc: int, seq: int, payload) -> bytearray:
+        # Предаллоцированный bytearray + pack_into: payload копируется один раз, без лишнего tobytes()
+        buf = bytearray(self.HEADER_SIZE + len(payload))
+        self._hdr_struct.pack_into(buf, 0, self._transmit_id, crc, seq)
+        buf[self.HEADER_SIZE:] = payload
+        return buf
 
     def _parse_packet(self, packet: bytes) -> Tuple[int, int, int, bytes]:
         if len(packet) < self.HEADER_SIZE:

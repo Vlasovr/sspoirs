@@ -128,9 +128,20 @@ def process_user_input():
             continue
         return message
 
+def configure_udp_buffers(sock, buffer_size=4 * 1024 * 1024):
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, buffer_size)
+    except (OSError, socket.error):
+        pass
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, buffer_size)
+    except (OSError, socket.error):
+        pass
+
 def create_socket(protocol):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM if protocol == TCP else socket.SOCK_DGRAM)
     if protocol == UDP:
+        configure_udp_buffers(sock)
         sock.bind(("0.0.0.0", 0))
     return sock
 
