@@ -1,3 +1,4 @@
+import hashlib
 import os
 import time
 import cnsl
@@ -6,6 +7,17 @@ from cnsl import LogTag
 from neterror import FileReadError
 
 FILES_DIR = "files"
+HASH_CHUNK_SIZE = 1024 * 1024
+
+def calculate_file_sha256(filepath):
+    digest = hashlib.sha256()
+    with open(filepath, "rb") as file:
+        while True:
+            chunk = file.read(HASH_CHUNK_SIZE)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 class FileSession:
     def __init__(self, conn, fd, filename, chunk_size, file_size):
@@ -39,6 +51,7 @@ class DownloadSession(FileSession):
         shadow_path = os.path.join(FILES_DIR, self.shadow_name)
         final_path = os.path.join(FILES_DIR, self.filename)
         os.rename(shadow_path, final_path)
+        return final_path
 
     def delete_shadow(self):
         shadow_path = os.path.join(FILES_DIR, self.shadow_name)
@@ -68,9 +81,10 @@ class DownloadSession(FileSession):
     def conclusion(self, result):
         if result:
             self.fd.close()
-            self.finalize_download()
+            final_path = self.finalize_download()
+            file_hash = calculate_file_sha256(final_path)
             speed = netbytes.calculate_speed(self.start_time, time.time(), self.file_size - self.start_offset)
-            result_str = f"Файл {self.filename} успешно загружен. Скорость: {speed}"
+            result_str = f"Файл {self.filename} успешно загружен. Скорость: {speed}. SHA-256 после приема: {file_hash}"
             cnsl.log(LogTag.SUCCESS, f"{result_str}")
         else:
             result_str = f"Ошибка при загрузке файла."
@@ -78,10 +92,11 @@ class DownloadSession(FileSession):
         return result_str
 
 class UploadSession(FileSession):
-    def __init__(self, conn, fd, filename, chunk_size, file_size, bytes_sent):
+    def __init__(self, conn, fd, filename, chunk_size, file_size, bytes_sent, source_hash=None):
         super().__init__(conn, fd, filename, chunk_size, file_size)
         self.bytes_sent = bytes_sent
         self.start_offset = bytes_sent
+        self.source_hash = source_hash
 
     def resume(self):
         if self.bytes_sent < self.file_size:
@@ -99,6 +114,8 @@ class UploadSession(FileSession):
             self.fd.close()
             speed = netbytes.calculate_speed(self.start_time, time.time(), self.file_size - self.start_offset)
             result_str = f"Файл {self.filename} успешно отправлен. Скорость: {speed}"
+            if self.source_hash:
+                result_str += f". SHA-256 до отправки: {self.source_hash}"
             cnsl.log(LogTag.SUCCESS, f"{result_str}")
         else:
             result_str = f"Не удалось прочитать данные из файла."

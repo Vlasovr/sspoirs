@@ -6,7 +6,7 @@ import cnsl
 import shlex
 import netbytes
 from cnsl import LogTag
-from file_session import UploadSession, DownloadSession
+from file_session import UploadSession, DownloadSession, calculate_file_sha256
 from neterror import CommandCancel, FileError
 from neterror import ServerError
 from  neterror import ConnectionClosed
@@ -87,6 +87,12 @@ class File:
             index += 1
 
         return candidate
+
+    @staticmethod
+    def log_hash_before_send(filepath, filename, prefix=""):
+        file_hash = calculate_file_sha256(filepath)
+        cnsl.log(LogTag.INFO, f"{prefix}SHA-256 до отправки файла '{filename}': {file_hash}")
+        return file_hash
 
 class FileServer(File):
     file_locks = {}
@@ -187,6 +193,7 @@ class FileServer(File):
 
         cnsl.log(LogTag.INFO,
                  f"{conn.get_addr()} Отправка файла '{filename}' ({netbytes.human_readable_size(file_size - bytes_sent)})...")
+        source_hash = cls.log_hash_before_send(filepath, filename, f"{conn.get_addr()} ")
 
         file = cls.prepare_file(filepath, bytes_sent)
         upload_session = UploadSession(
@@ -195,7 +202,8 @@ class FileServer(File):
             filename=filename,
             chunk_size=chunk_size,
             file_size=file_size,
-            bytes_sent=bytes_sent
+            bytes_sent=bytes_sent,
+            source_hash=source_hash
         )
         try:
             while upload_session.resume():
@@ -368,6 +376,7 @@ class FileClient(File):
 
         cnsl.log(LogTag.INFO,
                  f"Отправка файла '{filename}' ({netbytes.human_readable_size(file_size - bytes_sent)})...")
+        source_hash = cls.log_hash_before_send(filepath, filename)
 
         tracker = ProgressTracker()
         cls.prepare_load(tracker, conn, bytes_sent, file_size)
@@ -378,7 +387,8 @@ class FileClient(File):
             filename=filename,
             chunk_size=chunk_size,
             file_size=file_size,
-            bytes_sent=bytes_sent
+            bytes_sent=bytes_sent,
+            source_hash=source_hash
         )
         try:
             while upload_session.resume():
